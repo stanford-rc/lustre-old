@@ -151,6 +151,19 @@ ldlm_processing_policy ldlm_get_processing_policy(struct ldlm_resource *res)
         return ldlm_processing_policy_table[res->lr_type];
 }
 EXPORT_SYMBOL(ldlm_get_processing_policy);
+
+static ldlm_reprocessing_policy ldlm_reprocessing_policy_table[] = {
+	[LDLM_PLAIN]	= ldlm_reprocess_queue,
+	[LDLM_EXTENT]	= ldlm_reprocess_queue,
+	[LDLM_FLOCK]	= ldlm_reprocess_queue,
+	[LDLM_IBITS]	= ldlm_reprocess_inodebits_queue,
+};
+
+ldlm_reprocessing_policy ldlm_get_reprocessing_policy(struct ldlm_resource *res)
+{
+	return ldlm_reprocessing_policy_table[res->lr_type];
+}
+
 #endif /* HAVE_SERVER_SUPPORT */
 
 void ldlm_register_intent(struct ldlm_namespace *ns, ldlm_res_policy arg)
@@ -1693,9 +1706,10 @@ static enum ldlm_error ldlm_lock_enqueue_helper(struct ldlm_lock *lock,
 	enum ldlm_error rc = ELDLM_OK;
 	struct list_head rpc_list = LIST_HEAD_INIT(rpc_list);
 	ldlm_processing_policy policy;
+
 	ENTRY;
 
-	policy = ldlm_processing_policy_table[res->lr_type];
+	policy = ldlm_get_processing_policy(res);
 restart:
 	policy(lock, flags, LDLM_PROCESS_ENQUEUE, &rc, &rpc_list);
 	if (rc == ELDLM_OK && lock->l_granted_mode != lock->l_req_mode &&
@@ -1882,11 +1896,12 @@ int ldlm_reprocess_queue(struct ldlm_resource *res, struct list_head *queue,
 	int rc = LDLM_ITER_CONTINUE;
 	enum ldlm_error err;
 	struct list_head bl_ast_list = LIST_HEAD_INIT(bl_ast_list);
+
 	ENTRY;
 
 	check_res_locked(res);
 
-	policy = ldlm_processing_policy_table[res->lr_type];
+	policy = ldlm_get_processing_policy(res);
 	LASSERT(policy);
 	LASSERT(intention == LDLM_PROCESS_RESCAN ||
 		intention == LDLM_PROCESS_RECOVERY);
@@ -2285,16 +2300,18 @@ static void __ldlm_reprocess_all(struct ldlm_resource *res,
 {
 	struct list_head rpc_list;
 #ifdef HAVE_SERVER_SUPPORT
+	ldlm_reprocessing_policy reprocess;
 	struct obd_device *obd;
-        int rc;
-        ENTRY;
+	int rc;
+
+	ENTRY;
 
 	INIT_LIST_HEAD(&rpc_list);
-        /* Local lock trees don't get reprocessed. */
-        if (ns_is_client(ldlm_res_to_ns(res))) {
-                EXIT;
-                return;
-        }
+	/* Local lock trees don't get reprocessed. */
+	if (ns_is_client(ldlm_res_to_ns(res))) {
+		EXIT;
+		return;
+	}
 
 	/* Disable reprocess during lock replay stage but allow during
 	 * request replay stage.
@@ -2305,7 +2322,8 @@ static void __ldlm_reprocess_all(struct ldlm_resource *res,
 		RETURN_EXIT;
 restart:
 	lock_res(res);
-	ldlm_reprocess_queue(res, &res->lr_waiting, &rpc_list, intention);
+	reprocess = ldlm_get_reprocessing_policy(res);
+	reprocess(res, &res->lr_waiting, &rpc_list, intention);
 	unlock_res(res);
 
 	rc = ldlm_run_ast_work(ldlm_res_to_ns(res), &rpc_list,
@@ -2315,16 +2333,16 @@ restart:
 		goto restart;
 	}
 #else
-        ENTRY;
+	ENTRY;
 
 	INIT_LIST_HEAD(&rpc_list);
-        if (!ns_is_client(ldlm_res_to_ns(res))) {
-                CERROR("This is client-side-only module, cannot handle "
-                       "LDLM_NAMESPACE_SERVER resource type lock.\n");
-                LBUG();
-        }
+	if (!ns_is_client(ldlm_res_to_ns(res))) {
+		CERROR("This is client-side-only module, cannot handle "
+		       "LDLM_NAMESPACE_SERVER resource type lock.\n");
+		LBUG();
+	}
 #endif
-        EXIT;
+	EXIT;
 }
 
 void ldlm_reprocess_all(struct ldlm_resource *res)

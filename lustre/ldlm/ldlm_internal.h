@@ -204,6 +204,10 @@ int ldlm_process_inodebits_lock(struct ldlm_lock *lock, __u64 *flags,
 				enum ldlm_process_intention intention,
 				enum ldlm_error *err,
 				struct list_head *work_list);
+int ldlm_reprocess_inodebits_queue(struct ldlm_resource *res,
+				   struct list_head *queue,
+				   struct list_head *work_list,
+				   enum ldlm_process_intention intention);
 /* ldlm_extent.c */
 int ldlm_process_extent_lock(struct ldlm_lock *lock, __u64 *flags,
 			     enum ldlm_process_intention intention,

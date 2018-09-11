@@ -1273,6 +1273,11 @@ typedef int (*ldlm_processing_policy)(struct ldlm_lock *lock, __u64 *flags,
 				      enum ldlm_error *err,
 				      struct list_head *work_list);
 
+typedef int (*ldlm_reprocessing_policy)(struct ldlm_resource *res,
+					struct list_head *queue,
+					struct list_head *work_list,
+					enum ldlm_process_intention intention);
+
 /**
  * Return values for lock iterators.
  * Also used during deciding of lock grants and cancellations.
@@ -1368,6 +1373,8 @@ struct ldlm_lock *ldlm_request_lock(struct ptlrpc_request *req);
 /* ldlm_lock.c */
 #ifdef HAVE_SERVER_SUPPORT
 ldlm_processing_policy ldlm_get_processing_policy(struct ldlm_resource *res);
+ldlm_reprocessing_policy
+ldlm_get_reprocessing_policy(struct ldlm_resource *res);
 #endif
 void ldlm_register_intent(struct ldlm_namespace *ns, ldlm_res_policy arg);
 void ldlm_lock2handle(const struct ldlm_lock *lock,

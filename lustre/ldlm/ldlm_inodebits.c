@@ -59,6 +59,102 @@
 #ifdef HAVE_SERVER_SUPPORT
 
 /**
+ * Iterate through all waiting locks on a given resource queue and attempt to
+ * grant them.
+ *
+ * Must be called with resource lock held.
+ */
+int ldlm_reprocess_inodebits_queue(struct ldlm_resource *res,
+				   struct list_head *queue,
+				   struct list_head *work_list,
+				   enum ldlm_process_intention intention)
+{
+	struct list_head *tmp, *pos;
+	__u64 flags;
+	__u64 bl_ibits;
+	int rc = LDLM_ITER_CONTINUE;
+	enum ldlm_error err;
+	struct list_head bl_ast_list = LIST_HEAD_INIT(bl_ast_list);
+
+	ENTRY;
+
+	check_res_locked(res);
+
+	LASSERT(res->lr_type == LDLM_IBITS);
+	LASSERT(intention == LDLM_PROCESS_RESCAN ||
+		intention == LDLM_PROCESS_RECOVERY);
+
+restart:
+	bl_ibits = 0;
+	CDEBUG(D_DLMTRACE, "--- Reprocess resource "DLDLMRES" (%p)\n",
+	       PLDLMRES(res), res);
+	list_for_each_safe(tmp, pos, queue) {
+		struct ldlm_lock *pending;
+		struct list_head rpc_list = LIST_HEAD_INIT(rpc_list);
+
+		pending = list_entry(tmp, struct ldlm_lock, l_res_link);
+
+		if (bl_ibits == MDS_INODELOCK_FULL)
+			break;
+
+		if (bl_ibits & (pending->l_policy_data.l_inodebits.bits |
+				pending->l_policy_data.l_inodebits.try_bits)) {
+			LDLM_DEBUG(pending, "Skip reprocess, bl_ibits: %llx ",
+				   bl_ibits);
+		} else {
+			LDLM_DEBUG(pending,
+				   "Reprocessing %slock, bl_bits %#llx ",
+				   bl_ibits ? "extra " : "", bl_ibits);
+
+			flags = 0;
+			rc = ldlm_process_inodebits_lock(pending, &flags,
+							 intention, &err,
+							 &rpc_list);
+			if (pending->l_granted_mode == pending->l_req_mode)
+				list_splice(&rpc_list, work_list);
+			else
+				list_splice(&rpc_list, &bl_ast_list);
+			/*
+			 * When this is called from recovery done, we always
+			 * want to scan the whole list no matter what 'rc' is
+			 * returned.
+			 */
+			if (intention == LDLM_PROCESS_RECOVERY)
+				continue;
+
+			if (rc == LDLM_ITER_CONTINUE)
+				continue;
+		}
+
+		/* with IBITS it is safe to let more waiting locks go if
+		 * their ibits are not crossing with any others locks
+		 * ahead. Technically we can just run policy for them
+		 * but to don't spend much time in reprocessing remember
+		 * all ibits from blocked locks ahead and reprocess only
+		 * locks with no matching bits.
+		 */
+		bl_ibits |= pending->l_policy_data.l_inodebits.bits |
+			    pending->l_policy_data.l_inodebits.try_bits;
+	}
+
+	if (!list_empty(&bl_ast_list)) {
+		unlock_res(res);
+
+		rc = ldlm_run_ast_work(ldlm_res_to_ns(res), &bl_ast_list,
+				       LDLM_WORK_BL_AST);
+
+		lock_res(res);
+		if (rc == -ERESTART)
+			GOTO(restart, rc);
+	}
+
+	if (!list_empty(&bl_ast_list))
+		ldlm_discard_bl_list(&bl_ast_list);
+
+	RETURN(intention == LDLM_PROCESS_RESCAN ? rc : LDLM_ITER_CONTINUE);
+}
+
+/**
  * Determine if the lock is compatible with all locks on the queue.
  *
  * If \a work_list is provided, conflicting locks are linked there.
