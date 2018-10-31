@@ -604,6 +604,8 @@ check_obd_connect_data(void)
 	CHECK_DEFINE_64X(OBD_CONNECT2_WBC_INTENTS);
 	CHECK_DEFINE_64X(OBD_CONNECT2_LOCK_CONVERT);
 	CHECK_DEFINE_64X(OBD_CONNECT2_ARCHIVE_ID_ARRAY);
+	CHECK_DEFINE_64X(OBD_CONNECT2_SELINUX_POLICY);
+	CHECK_DEFINE_64X(OBD_CONNECT2_ASYNC_DISCARD);
 
 	CHECK_VALUE_X(OBD_CKSUM_CRC32);
 	CHECK_VALUE_X(OBD_CKSUM_ADLER);
@@ -2888,7 +2890,7 @@ main(int argc, char **argv)
 	check_update_records();
 	check_llog_update_record();
 
-	printf("}\n\n");
+	printf("}\n");
 
 	return 0;
 }
