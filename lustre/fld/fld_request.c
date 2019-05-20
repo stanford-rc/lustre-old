@@ -346,7 +346,6 @@ int fld_client_rpc(struct obd_export *exp,
 
 	LASSERT(exp != NULL);
 
-again:
 	imp = class_exp2cliimp(exp);
 	switch (fld_op) {
 	case FLD_QUERY:
@@ -415,13 +414,11 @@ again:
 			/*
 			 * Since LWP is not replayable, so it will keep
 			 * trying unless umount happens or the remote
-			 * target does not support the operation, otherwise
-			 * it would cause unecessary failure of the
-			 * application.
+			 * target does not support the operation or
+			 * the recovery is aborted, otherwise it would
+			 * cause unecessary failure of the application.
 			 */
-			ptlrpc_req_finished(req);
-			rc = 0;
-			goto again;
+			GOTO(out_req, rc = -EAGAIN);
 		}
 		GOTO(out_req, rc);
 	}

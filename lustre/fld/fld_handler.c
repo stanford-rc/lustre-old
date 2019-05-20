@@ -275,11 +275,30 @@ int fld_server_lookup(const struct lu_env *env, struct lu_server_fld *fld,
 		 * replication on all mdt servers.
 		 */
 		range->lsr_start = seq;
+retry:
 		rc = fld_client_rpc(fld->lsf_control_exp,
 				    range, FLD_QUERY, NULL);
-		if (rc == 0)
-			fld_cache_insert(fld->lsf_cache, range);
+		if (rc != -EAGAIN) {
+			if (rc == 0)
+				fld_cache_insert(fld->lsf_cache, range);
+
+			GOTO(out, rc);
+		}
+
+		if (fld->lsf_obj != NULL) {
+			struct lu_device *lu = fld->lsf_obj->do_lu.lo_dev;
+
+			if (lu && lu->ld_site && lu->ld_site->ls_tgt &&
+			    lu->ld_site->ls_tgt->lut_obd->obd_abort_recovery)
+				GOTO(out, rc = -EIO);
+		}
+
+		schedule_timeout(cfs_time_seconds(1));
+		goto retry;
+
 	}
+
+out:
 	RETURN(rc);
 }
 EXPORT_SYMBOL(fld_server_lookup);
