@@ -215,7 +215,14 @@ are multiple OSTs that are being replaced.
 Stripe size is \fIn\fR bytes, or \fBK\fRibi-, \fBM\fRebi-,
 \fBG\fRibi-, \fBT\fRebi-, \fBP\fRebi-, or \fBE\fRbi-abytes if a
 suffix is given.  For composite files, this matches the stripe
-size of the last initialized component.
+size of the last initialized non-extension component.
+.TP
+.BR --extension-size | --ext-size | -z
+Extension size is \fIn\fR bytes, or \fBK\fRibi-, \fBM\fRebi-,
+\fBG\fRibi-, \fBT\fRebi-, \fBP\fRebi-, or \fBE\fRbi-abytes if a
+suffix is given.  For composite files, this matches the extension
+size of any extension component.
+>>>>>>> 72479a52be... LU-9341 utils: fix lfs find for composite files
 .TP
 .BR --type | -t
 File has type: \fBb\fRlock, \fBc\fRharacter, \fBd\fRirectory,
