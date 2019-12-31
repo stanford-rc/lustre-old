@@ -2895,9 +2895,10 @@ static int osd_declare_attr_set(const struct lu_env *env,
 			RETURN(rc);
 
 		gid = i_gid_read(obj->oo_inode);
+		CDEBUG(D_QUOTA, "declare uid %d -> %d gid %d -> %d\n", uid,
+		       attr->la_uid, gid, attr->la_gid);
 		enforce = (attr->la_valid & LA_GID) && (attr->la_gid != gid);
-		rc = osd_declare_attr_qid(env, obj, oh, bspace,
-					  i_gid_read(obj->oo_inode),
+		rc = osd_declare_attr_qid(env, obj, oh, bspace, gid,
 					  attr->la_gid, enforce, GRPQUOTA,
 					  ignore_edquot);
 		if (rc)
@@ -3051,6 +3052,11 @@ static int osd_quota_transfer(struct inode *inode, const struct lu_attr *attr,
 	    (attr->la_valid & LA_GID && attr->la_gid != i_gid_read(inode))) {
 		struct iattr iattr;
 
+		CDEBUG(D_QUOTA,
+		       "executing dquot_transfer inode %ld uid %d -> %d gid %d -> %d\n",
+		       inode->i_ino, i_uid_read(inode), attr->la_uid,
+		       i_gid_read(inode), attr->la_gid);
+
 		ll_vfs_dq_init(inode);
 		iattr.ia_valid = 0;
 		if (attr->la_valid & LA_UID)
@@ -3146,6 +3152,8 @@ static int osd_attr_set(const struct lu_env *env,
 
 	ll_dirty_inode(inode, I_DIRTY_DATASYNC);
 
+	osd_trans_exec_check(env, handle, OSD_OT_ATTR_SET);
+
 	if (!(attr->la_valid & LA_FLAGS))
 		GOTO(out, rc);
 
@@ -3164,6 +3172,9 @@ static int osd_attr_set(const struct lu_env *env,
 		lma->lma_incompat |=
 			lustre_to_lma_flags(attr->la_flags);
 		lustre_lma_swab(lma);
+
+		osd_trans_exec_op(env, handle, OSD_OT_XATTR_SET);
+
 		rc = __osd_xattr_set(info, inode, XATTR_NAME_LMA,
 				     lma, sizeof(*lma), XATTR_REPLACE);
 		if (rc != 0) {
@@ -3179,7 +3190,6 @@ static int osd_attr_set(const struct lu_env *env,
 		osd_trans_exec_check(env, handle, OSD_OT_XATTR_SET);
 	}
 out:
-	osd_trans_exec_check(env, handle, OSD_OT_ATTR_SET);
 
 	return rc;
 }
