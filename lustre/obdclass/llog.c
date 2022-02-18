@@ -476,6 +476,15 @@ int llog_verify_record(const struct llog_handle *llh, struct llog_rec_hdr *rec)
 }
 EXPORT_SYMBOL(llog_verify_record);
 
+static inline bool llog_is_index_skipable(int idx, struct llog_log_hdr *llh,
+					  struct llog_process_cat_data *cd)
+{
+	if (cd && (cd->lpcd_read_mode & LLOG_READ_MODE_RAW))
+		return false;
+
+	return !test_bit_le(idx, LLOG_HDR_BITMAP(llh));
+}
+
 static int llog_process_thread(void *arg)
 {
 	struct llog_process_info	*lpi = arg;
@@ -513,8 +522,10 @@ static int llog_process_thread(void *arg)
 		last_called_index = cd->lpcd_first_idx;
 		index = cd->lpcd_first_idx + 1;
 	}
-	if (cd != NULL && cd->lpcd_last_idx)
+	if (cd && cd->lpcd_last_idx)
 		last_index = cd->lpcd_last_idx;
+	else if (cd && (cd->lpcd_read_mode & LLOG_READ_MODE_RAW))
+		last_index = loghandle->lgh_last_idx;
 	else
 		last_index = LLOG_HDR_BITMAP_SIZE(llh) - 1;
 
@@ -528,7 +539,7 @@ static int llog_process_thread(void *arg)
 
 		/* skip records not set in bitmap */
 		while (index <= last_index &&
-		       !ext2_test_bit(index, LLOG_HDR_BITMAP(llh)))
+		       llog_is_index_skipable(index, llh, cd))
 			++index;
 
 		/* There are no indices prior the last_index */
@@ -691,8 +702,8 @@ repeat:
 			loghandle->lgh_cur_offset = (char *)rec - (char *)buf +
 						    chunk_offset;
 
-			/* if set, process the callback on this record */
-			if (ext2_test_bit(index, LLOG_HDR_BITMAP(llh))) {
+			/* if needed, process the callback on this record */
+			if (!llog_is_index_skipable(index, llh, cd)) {
 				struct llog_cookie *lgc;
 				__u64	tmp_off;
 				int	tmp_idx;
@@ -846,6 +857,9 @@ int llog_process_or_fork(const struct lu_env *env,
 			 llog_cb_t cb, void *data, void *catdata, bool fork)
 {
         struct llog_process_info *lpi;
+	struct llog_process_data *d = data;
+	struct llog_process_cat_data *cd = catdata;
+	__u32 flags = loghandle->lgh_hdr->llh_flags;
         int                      rc;
 
         ENTRY;
@@ -860,6 +874,12 @@ int llog_process_or_fork(const struct lu_env *env,
 	lpi->lpi_cbdata    = data;
 	lpi->lpi_catdata   = catdata;
 
+	CDEBUG(D_OTHER, "Processing "DFID" flags 0x%03x startcat %d startidx %d first_idx %d last_idx %d read_mode %d\n",
+	       PFID(&loghandle->lgh_id.lgl_oi.oi_fid), flags,
+	       (flags & LLOG_F_IS_CAT) && d ? d->lpd_startcat : -1,
+	       (flags & LLOG_F_IS_CAT) && d ? d->lpd_startidx : -1,
+	       cd ? cd->lpcd_first_idx : -1, cd ? cd->lpcd_last_idx : -1,
+	       cd ? cd->lpcd_read_mode : -1);
 	if (fork) {
 		struct task_struct *task;
 
@@ -929,7 +949,7 @@ int llog_reverse_process(const struct lu_env *env,
 
 		/* skip records not set in bitmap */
 		while (index >= first_index &&
-		       !ext2_test_bit(index, LLOG_HDR_BITMAP(llh)))
+		       llog_is_index_skipable(index, llh, cd))
 			--index;
 
 		LASSERT(index >= first_index - 1);
@@ -959,8 +979,8 @@ int llog_reverse_process(const struct lu_env *env,
 			if (tail->lrt_index == 0)
 				GOTO(out, rc = 0); /* no more records */
 
-			/* if set, process the callback on this record */
-			if (ext2_test_bit(index, LLOG_HDR_BITMAP(llh))) {
+			/* if needed, process the callback on this record */
+			if (!llog_is_index_skipable(index, llh, cd)) {
 				rec = (void *)tail - tail->lrt_len +
 				      sizeof(*tail);
 
@@ -1406,13 +1426,24 @@ out:
 }
 EXPORT_SYMBOL(llog_is_empty);
 
+/* this callback run in raw read mode (canceled record are processed) */
 int llog_copy_handler(const struct lu_env *env, struct llog_handle *llh,
 		      struct llog_rec_hdr *rec, void *data)
 {
-	struct llog_handle	*copy_llh = data;
+	struct llog_handle *copy_llh = data;
+	int idx = rec->lrh_index;
+	int rc;
+
+	ENTRY;
 
 	/* Append all records */
-	return llog_write(env, copy_llh, rec, LLOG_NEXT_IDX);
+	rc = llog_write(env, copy_llh, rec, LLOG_NEXT_IDX);
+
+	/* Cancel the record if it is canceled on the source */
+	if (!rc && !test_bit_le(idx, LLOG_HDR_BITMAP(llh->lgh_hdr)))
+		rc = llog_cancel_rec(env, copy_llh, copy_llh->lgh_last_idx);
+
+	RETURN(rc);
 }
 
 /* backup plain llog */
@@ -1420,8 +1451,9 @@ int llog_backup(const struct lu_env *env, struct obd_device *obd,
 		struct llog_ctxt *ctxt, struct llog_ctxt *bctxt,
 		char *name, char *backup)
 {
-	struct llog_handle	*llh, *bllh;
-	int			 rc;
+	struct llog_handle *llh, *bllh;
+	struct llog_process_cat_data cd = {0};
+	int rc;
 
 	ENTRY;
 
@@ -1466,9 +1498,11 @@ int llog_backup(const struct lu_env *env, struct obd_device *obd,
 	if (rc)
 		GOTO(out_backup, rc);
 
+	/* Read canceled records to have an exact copy */
+	cd.lpcd_read_mode = LLOG_READ_MODE_RAW;
 	/* Copy log record by record */
 	rc = llog_process_or_fork(env, llh, llog_copy_handler, (void *)bllh,
-				  NULL, false);
+				  &cd, false);
 	if (rc)
 		CERROR("%s: failed to backup log %s: rc = %d\n",
 		       obd->obd_name, name, rc);
